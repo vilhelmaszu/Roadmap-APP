@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "_scaffold",
-    "slug": "_scaffold",
+    "name": "Roadmap",
+    "slug": "roadmap-goal-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -21,7 +21,14 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "name": "Roadmap",
+      "shortName": "Roadmap",
+      "themeColor": "#0F1115",
+      "backgroundColor": "#0F1115",
+      "display": "standalone",
+      "startUrl": "/",
+      "lang": "en"
     },
     "plugins": [
       "expo-router",
@@ -34,7 +41,8 @@
             "imageWidth": 76
           }
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
