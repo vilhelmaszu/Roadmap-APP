@@ -260,6 +260,16 @@ function quote(s: string): string {
   return `"${s.replace(/"/g, '""')}"`;
 }
 
+// Merge cloud rows with local rows, preserving local-only rows. Used by
+// pullAll so a goal you added locally but haven't pushed yet survives the
+// next sign-in pull.
+function mergePreservingLocal<T extends { id: string }>(cloud: T[], local: T[]): T[] {
+  if (cloud.length === 0) return local;
+  const cloudIds = new Set(cloud.map((x) => x.id));
+  const localOnly = local.filter((x) => !cloudIds.has(x.id));
+  return [...cloud, ...localOnly];
+}
+
 function schedulePush() {
   if (pulling || !currentUserId) return;
   if (pushTimer) clearTimeout(pushTimer);
@@ -293,19 +303,26 @@ async function pullAll(uid: string): Promise<{ hasCloudData: boolean }> {
 
     if (hasCloudData) {
       const p = profileRes.data;
-      // Per-table preserve-on-empty: if cloud has 0 rows for a table but local
-      // has rows, keep the local rows so a partial cloud (e.g. earlier upsert
-      // failed for one table due to a missing column) doesn't wipe them out.
-      // The always-push that runs after pullAll will then upload the preserved
-      // local rows to fill the cloud gap.
+      // Pull does an additive MERGE — cloud rows always come through (cloud
+      // is canonical for shared state across devices), AND any local row
+      // whose id isn't in cloud is preserved. That way a goal you added
+      // locally but reloaded before its debounced push completed isn't
+      // wiped when the next sign-in pulls. The trailing pushAll uploads the
+      // preserved local rows so cloud catches up.
+      //
+      // Tradeoff: cross-device deletes don't propagate via pull alone —
+      // device A deletes row X, device B's pull keeps X because B still has
+      // it locally. Active edits / additions on device B's side push deletes
+      // through normally; only a passive idle B would lag. Acceptable for
+      // single-user use, revisit when multi-user lands.
       useStore.setState((s) => {
-        const mergedProjects = projects.length > 0 ? projects : s.projects;
+        const mergedProjects = mergePreservingLocal(projects, s.projects);
         const activeId = p?.active_project_id ?? mergedProjects[0]?.id ?? s.activeProjectId;
         return {
           projects: mergedProjects,
-          goals: goals.length > 0 ? goals : s.goals,
-          notes: notes.length > 0 ? notes : s.notes,
-          sets: sets.length > 0 ? sets : s.sets,
+          goals: mergePreservingLocal(goals, s.goals),
+          notes: mergePreservingLocal(notes, s.notes),
+          sets: mergePreservingLocal(sets, s.sets),
           activeProjectId: activeId,
           vision: mergedProjects.find((x) => x.id === activeId)?.vision ?? s.vision,
           profile: p
