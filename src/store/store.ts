@@ -112,24 +112,48 @@ type Actions = {
   resetAll: () => void;
 };
 
-// Seed: the morimake.com roadmap — 6 workspaces, each with its own vision.
-// Fresh installs land on the first project (Marketing Suite App).
-const seedActive = seedProjects.find((p) => p.id === seedActiveProjectId) ?? seedProjects[0];
+// Privacy gate: fresh installs land on an empty Default project. The morimake
+// seed in `src/domain/seed.ts` is no longer auto-loaded — anyone visiting the
+// deployed URL without signing in sees an empty app. Real data lives in
+// Supabase and pulls down once the user signs in (see `services/sync.ts`).
+// Sign-out wipes back to this initial state, so signed-out always = empty.
+const emptyDefaultProject = makeDefaultProject({
+  id: 'v1',
+  title: '',
+  why: '',
+  targetYear: new Date().getFullYear() + 5,
+  points: [],
+});
 
 const initial: State = {
-  projects: seedProjects,
-  activeProjectId: seedActive.id,
-  vision: seedActive.vision,
-  goals: seedGoals.map((g) => ({ ...g, projectId: g.projectId ?? seedActive.id })),
-  sets: seedSets,
-  notes: seedNotes,
-  profile: seedProfile,
+  projects: [emptyDefaultProject],
+  activeProjectId: emptyDefaultProject.id,
+  vision: emptyDefaultProject.vision,
+  goals: [],
+  sets: [],
+  notes: [],
+  profile: {
+    name: '',
+    xp: 0,
+    streakDays: 0,
+    bestStreak: 0,
+    lastActiveDate: undefined,
+    freezeTokens: 0,
+    stats: { daily: 0, weekly: 0, monthly: 0, yearly: 0, missed: 0 },
+  },
   questDate: todayKey(),
   claimedQuests: [],
-  onboarded: false,
+  onboarded: true, // No demo to walk through — straight to a blank signed-out app.
   lastLevelUp: null,
   lastBadgeId: null,
 };
+// Imports below are kept for legacy paths (importData / migrate fallbacks).
+// They no longer feed the initial state.
+void seedActiveProjectId;
+void seedGoals;
+void seedNotes;
+void seedProfile;
+void seedProjects;
 
 // Vision lives canonically inside the active project and is mirrored at state.vision.
 // This helper updates BOTH so legacy `s.vision` readers stay correct.
@@ -647,7 +671,12 @@ export const useStore = create<State & Actions>()(
     }),
     {
       name: 'roadmap.store.v2',
-      version: 2,
+      // Bumped from 2 → 3 with the privacy gate: every device with v2 state
+      // had the morimake seed auto-loaded and we want to drop that. The
+      // migrate() below returns `undefined` for v < 3 which makes Zustand
+      // fall back to the (now empty) initial state. Signed-in users get
+      // their cloud data back from the sync layer on next startSync.
+      version: 3,
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (s) => ({
         projects: s.projects,
@@ -662,7 +691,11 @@ export const useStore = create<State & Actions>()(
         onboarded: s.onboarded,
       }),
       // Backfill fields added after the original v2 shape was first persisted.
-      migrate: (persisted: any) => {
+      migrate: (persisted: any, version: number) => {
+        // Privacy gate: bumping to v3 wipes any locally-cached state from v2
+        // so signed-out browsers stop showing the morimake seed. Cloud data
+        // pulls back down for signed-in users via the sync layer.
+        if (version < 3) return undefined as any;
         if (!persisted) return persisted;
         if (!Array.isArray(persisted.sets)) persisted.sets = seedSets;
         if (persisted.profile?.stats && persisted.profile.stats.missed == null) {
