@@ -260,14 +260,24 @@ function quote(s: string): string {
   return `"${s.replace(/"/g, '""')}"`;
 }
 
-// Merge cloud rows with local rows, preserving local-only rows. Used by
-// pullAll so a goal you added locally but haven't pushed yet survives the
-// next sign-in pull.
-function mergePreservingLocal<T extends { id: string }>(cloud: T[], local: T[]): T[] {
-  if (cloud.length === 0) return local;
+// Merge cloud rows with local rows. Used by pullAll. Two cases for a row
+// that's in local but NOT in cloud:
+//   - createdAt > lastSyncAt → added locally since our last successful pull,
+//     not yet pushed → PRESERVE.
+//   - createdAt <= lastSyncAt → existed at last pull, gone now → another
+//     device DELETED it → DROP locally too.
+// `lastSyncAt === 0` means we've never successfully pulled on this device,
+// so we fall back to merge-preserve-all (treat everything local as pending).
+function mergePull<T extends { id: string; createdAt: number }>(
+  cloud: T[],
+  local: T[],
+  lastSyncAt: number,
+): T[] {
+  if (cloud.length === 0 && lastSyncAt === 0) return local;
   const cloudIds = new Set(cloud.map((x) => x.id));
   const localOnly = local.filter((x) => !cloudIds.has(x.id));
-  return [...cloud, ...localOnly];
+  const pendingPush = lastSyncAt === 0 ? localOnly : localOnly.filter((x) => x.createdAt > lastSyncAt);
+  return [...cloud, ...pendingPush];
 }
 
 function schedulePush() {
@@ -285,6 +295,9 @@ async function pullAll(uid: string): Promise<{ hasCloudData: boolean }> {
   const sb = supabase();
   if (!sb) return { hasCloudData: false };
   setStatus('pulling');
+  // Capture the timestamp BEFORE the query so any rows created during the
+  // pull are still considered "pending push" on the next pull.
+  const pullStartedAt = Date.now();
   try {
     pulling = true;
     const [projectsRes, goalsRes, notesRes, setsRes, profileRes] = await Promise.all([
@@ -316,13 +329,14 @@ async function pullAll(uid: string): Promise<{ hasCloudData: boolean }> {
       // through normally; only a passive idle B would lag. Acceptable for
       // single-user use, revisit when multi-user lands.
       useStore.setState((s) => {
-        const mergedProjects = mergePreservingLocal(projects, s.projects);
+        const lastSync = s.lastSyncAt;
+        const mergedProjects = mergePull(projects, s.projects, lastSync);
         const activeId = p?.active_project_id ?? mergedProjects[0]?.id ?? s.activeProjectId;
         return {
           projects: mergedProjects,
-          goals: mergePreservingLocal(goals, s.goals),
-          notes: mergePreservingLocal(notes, s.notes),
-          sets: mergePreservingLocal(sets, s.sets),
+          goals: mergePull(goals, s.goals, lastSync),
+          notes: mergePull(notes, s.notes, lastSync),
+          sets: mergePull(sets, s.sets, lastSync),
           activeProjectId: activeId,
           vision: mergedProjects.find((x) => x.id === activeId)?.vision ?? s.vision,
           profile: p
@@ -339,8 +353,14 @@ async function pullAll(uid: string): Promise<{ hasCloudData: boolean }> {
           onboarded: p?.onboarded ?? s.onboarded,
           questDate: p?.quest_date ?? s.questDate,
           claimedQuests: Array.isArray(p?.claimed_quests) ? p.claimed_quests : s.claimedQuests,
+          lastSyncAt: pullStartedAt,
         };
       });
+    } else {
+      // No cloud data at all (brand-new account first sign-in) — still mark
+      // the pull as successful so future pulls switch to delete-propagation
+      // mode rather than merge-preserve.
+      useStore.setState({ lastSyncAt: pullStartedAt });
     }
     setStatus('idle');
     return { hasCloudData };

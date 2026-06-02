@@ -47,6 +47,11 @@ type State = {
   onboarded: boolean; // first-run welcome shown
   lastLevelUp: number | null;
   lastBadgeId: string | null;
+  // Timestamp (ms) of the last successful Supabase pull. Used by the sync
+  // layer to distinguish "local row added since last pull (pending push)"
+  // from "local row that was deleted on cloud after last pull". 0 = never
+  // pulled (first-ever sign-in on this device).
+  lastSyncAt: number;
 };
 
 type AddGoalInput = {
@@ -146,6 +151,7 @@ const initial: State = {
   onboarded: true, // No demo to walk through — straight to a blank signed-out app.
   lastLevelUp: null,
   lastBadgeId: null,
+  lastSyncAt: 0,
 };
 // Imports below are kept for legacy paths (importData / migrate fallbacks).
 // They no longer feed the initial state.
@@ -689,6 +695,7 @@ export const useStore = create<State & Actions>()(
         questDate: s.questDate,
         claimedQuests: s.claimedQuests,
         onboarded: s.onboarded,
+        lastSyncAt: s.lastSyncAt,
       }),
       // Backfill fields added after the original v2 shape was first persisted.
       migrate: (persisted: any, version: number) => {
