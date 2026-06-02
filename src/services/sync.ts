@@ -192,6 +192,13 @@ export function onSyncStatus(cb: (s: SyncStatus) => void): () => void {
 
 // --- Push (local → cloud) --------------------------------------------------
 
+// Tiny helper so a failing call (RLS reject, missing column, etc.) screams
+// in the console instead of silently no-op'ing.
+async function check(label: string, p: PromiseLike<{ error: { message: string } | null }>) {
+  const { error } = await p;
+  if (error) console.error(`[sync] ${label} failed:`, error.message);
+}
+
 async function pushAll() {
   const sb = supabase();
   if (!sb || !currentUserId) return;
@@ -201,43 +208,43 @@ async function pushAll() {
     const s = useStore.getState();
 
     // projects
-    await sb.from('projects').upsert(s.projects.map((p) => projectToRow(p, uid)));
+    await check('projects upsert', sb.from('projects').upsert(s.projects.map((p) => projectToRow(p, uid))));
     const projectIds = s.projects.map((p) => p.id);
     if (projectIds.length > 0) {
-      await sb.from('projects').delete().eq('user_id', uid).not('id', 'in', `(${projectIds.map(quote).join(',')})`);
+      await check('projects delete', sb.from('projects').delete().eq('user_id', uid).not('id', 'in', `(${projectIds.map(quote).join(',')})`));
     } else {
-      await sb.from('projects').delete().eq('user_id', uid);
+      await check('projects delete-all', sb.from('projects').delete().eq('user_id', uid));
     }
 
     // goals
-    if (s.goals.length > 0) await sb.from('goals').upsert(s.goals.map((g) => goalToRow(g, uid)));
+    if (s.goals.length > 0) await check('goals upsert', sb.from('goals').upsert(s.goals.map((g) => goalToRow(g, uid))));
     const goalIds = s.goals.map((g) => g.id);
     if (goalIds.length > 0) {
-      await sb.from('goals').delete().eq('user_id', uid).not('id', 'in', `(${goalIds.map(quote).join(',')})`);
+      await check('goals delete', sb.from('goals').delete().eq('user_id', uid).not('id', 'in', `(${goalIds.map(quote).join(',')})`));
     } else {
-      await sb.from('goals').delete().eq('user_id', uid);
+      await check('goals delete-all', sb.from('goals').delete().eq('user_id', uid));
     }
 
     // notes
-    if (s.notes.length > 0) await sb.from('notes').upsert(s.notes.map((n) => noteToRow(n, uid)));
+    if (s.notes.length > 0) await check('notes upsert', sb.from('notes').upsert(s.notes.map((n) => noteToRow(n, uid))));
     const noteIds = s.notes.map((n) => n.id);
     if (noteIds.length > 0) {
-      await sb.from('notes').delete().eq('user_id', uid).not('id', 'in', `(${noteIds.map(quote).join(',')})`);
+      await check('notes delete', sb.from('notes').delete().eq('user_id', uid).not('id', 'in', `(${noteIds.map(quote).join(',')})`));
     } else {
-      await sb.from('notes').delete().eq('user_id', uid);
+      await check('notes delete-all', sb.from('notes').delete().eq('user_id', uid));
     }
 
     // sets
-    if (s.sets.length > 0) await sb.from('goal_sets').upsert(s.sets.map((x) => setToRow(x, uid)));
+    if (s.sets.length > 0) await check('sets upsert', sb.from('goal_sets').upsert(s.sets.map((x) => setToRow(x, uid))));
     const setIds = s.sets.map((x) => x.id);
     if (setIds.length > 0) {
-      await sb.from('goal_sets').delete().eq('user_id', uid).not('id', 'in', `(${setIds.map(quote).join(',')})`);
+      await check('sets delete', sb.from('goal_sets').delete().eq('user_id', uid).not('id', 'in', `(${setIds.map(quote).join(',')})`));
     } else {
-      await sb.from('goal_sets').delete().eq('user_id', uid);
+      await check('sets delete-all', sb.from('goal_sets').delete().eq('user_id', uid));
     }
 
     // profile (single row per user, upsert keyed on user_id)
-    await sb.from('profiles').upsert(profileToRow(s.profile, uid, s.activeProjectId, s.onboarded, s.questDate, s.claimedQuests));
+    await check('profile upsert', sb.from('profiles').upsert(profileToRow(s.profile, uid, s.activeProjectId, s.onboarded, s.questDate, s.claimedQuests)));
 
     setStatus('idle');
   } catch (e) {
@@ -284,28 +291,37 @@ async function pullAll(uid: string): Promise<{ hasCloudData: boolean }> {
 
     if (hasCloudData) {
       const p = profileRes.data;
-      useStore.setState((s) => ({
-        projects,
-        goals,
-        notes,
-        sets,
-        activeProjectId: p?.active_project_id ?? projects[0]?.id ?? s.activeProjectId,
-        vision: projects.find((x) => x.id === (p?.active_project_id ?? projects[0]?.id))?.vision ?? s.vision,
-        profile: p
-          ? {
-              name: p.name ?? '',
-              xp: p.xp ?? 0,
-              streakDays: p.streak_days ?? 0,
-              bestStreak: p.best_streak ?? 0,
-              lastActiveDate: p.last_active_date ?? undefined,
-              freezeTokens: p.freeze_tokens ?? 0,
-              stats: p.stats ?? { daily: 0, weekly: 0, monthly: 0, yearly: 0, missed: 0 },
-            }
-          : s.profile,
-        onboarded: p?.onboarded ?? s.onboarded,
-        questDate: p?.quest_date ?? s.questDate,
-        claimedQuests: Array.isArray(p?.claimed_quests) ? p.claimed_quests : s.claimedQuests,
-      }));
+      // Per-table preserve-on-empty: if cloud has 0 rows for a table but local
+      // has rows, keep the local rows so a partial cloud (e.g. earlier upsert
+      // failed for one table due to a missing column) doesn't wipe them out.
+      // The always-push that runs after pullAll will then upload the preserved
+      // local rows to fill the cloud gap.
+      useStore.setState((s) => {
+        const mergedProjects = projects.length > 0 ? projects : s.projects;
+        const activeId = p?.active_project_id ?? mergedProjects[0]?.id ?? s.activeProjectId;
+        return {
+          projects: mergedProjects,
+          goals: goals.length > 0 ? goals : s.goals,
+          notes: notes.length > 0 ? notes : s.notes,
+          sets: sets.length > 0 ? sets : s.sets,
+          activeProjectId: activeId,
+          vision: mergedProjects.find((x) => x.id === activeId)?.vision ?? s.vision,
+          profile: p
+            ? {
+                name: p.name ?? '',
+                xp: p.xp ?? 0,
+                streakDays: p.streak_days ?? 0,
+                bestStreak: p.best_streak ?? 0,
+                lastActiveDate: p.last_active_date ?? undefined,
+                freezeTokens: p.freeze_tokens ?? 0,
+                stats: p.stats ?? { daily: 0, weekly: 0, monthly: 0, yearly: 0, missed: 0 },
+              }
+            : s.profile,
+          onboarded: p?.onboarded ?? s.onboarded,
+          questDate: p?.quest_date ?? s.questDate,
+          claimedQuests: Array.isArray(p?.claimed_quests) ? p.claimed_quests : s.claimedQuests,
+        };
+      });
     }
     setStatus('idle');
     return { hasCloudData };
@@ -389,31 +405,35 @@ function snapshot(s: ReturnType<typeof useStore.getState>): string {
 
 // --- Public lifecycle ------------------------------------------------------
 
-// Call once on sign-in. Pulls cloud → local; if cloud is empty, uploads local
-// data as the initial state for this account. Starts realtime + change watcher.
+// Call once on sign-in. Pulls cloud → local (preserving any local table the
+// cloud is empty for), then pushes back so partial-cloud gaps get filled.
+// This handles both brand-new accounts AND accounts where an earlier upsert
+// failed (e.g. a missing column) and left one table empty in the cloud.
+// Starts realtime + change watcher.
 export async function startSync(userId: string): Promise<void> {
   if (currentUserId === userId) return;
   currentUserId = userId;
 
-  const { hasCloudData } = await pullAll(userId);
-  if (!hasCloudData) {
-    // Migration: this account has no cloud data yet → upload local seed.
-    await pushAll();
-  }
+  await pullAll(userId);
+  await pushAll();
 
   startRealtime(userId);
   startStoreWatcher();
 }
 
-// Call on sign-out. Stops realtime + watcher; does NOT clear local data.
+// Call on sign-out. Stops realtime + watcher AND wipes local state back to
+// the empty initial — so a signed-out browser shows exactly what a fresh
+// visitor would see (no leftover goals/notes from the previous account).
 export function stopSync(): void {
   currentUserId = null;
+  // Unsubscribe FIRST so the resetAll() below doesn't push DELETE to cloud.
   stopStoreWatcher();
   stopRealtime();
   if (pushTimer) {
     clearTimeout(pushTimer);
     pushTimer = null;
   }
+  useStore.getState().resetAll();
   setStatus('idle');
 }
 
