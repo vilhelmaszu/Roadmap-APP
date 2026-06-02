@@ -76,10 +76,14 @@ create table if not exists public.notes (
   project_id text,
   title text not null,
   body text not null default '',
+  secure boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   primary key (user_id, id)
 );
+
+-- Additive backfill for existing installs.
+alter table public.notes add column if not exists secure boolean not null default false;
 
 create table if not exists public.goal_sets (
   id text not null,

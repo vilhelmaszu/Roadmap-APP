@@ -51,6 +51,8 @@ export type Goal = {
 };
 
 // A free-form roadmap note the user can create and write into.
+// When `secure: true`, `body` holds an encrypted JSON envelope instead of
+// plain text. See `src/services/vault.ts` for the envelope format.
 export type Note = {
   id: string;
   title: string;
@@ -58,6 +60,7 @@ export type Note = {
   projectId?: string; // workspace this note belongs to
   createdAt: number;
   updatedAt: number;
+  secure?: boolean;   // true → body is an encrypted envelope (vault note)
 };
 
 // A user-created collection of goals (e.g. "Marketing", "Fitness").

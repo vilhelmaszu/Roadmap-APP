@@ -110,6 +110,7 @@ function noteToRow(n: Note, userId: string) {
     project_id: n.projectId ?? null,
     title: n.title,
     body: n.body,
+    secure: n.secure ?? false,
     created_at: new Date(n.createdAt).toISOString(),
     updated_at: new Date(n.updatedAt).toISOString(),
   };
@@ -120,6 +121,7 @@ function noteFromRow(r: any): Note {
     title: r.title,
     body: r.body,
     projectId: r.project_id ?? undefined,
+    secure: r.secure ?? undefined,
     createdAt: new Date(r.created_at).getTime(),
     updatedAt: new Date(r.updated_at).getTime(),
   };
@@ -419,6 +421,25 @@ export async function startSync(userId: string): Promise<void> {
 
   startRealtime(userId);
   startStoreWatcher();
+  attachVisibilityRefresh();
+}
+
+// Mobile browsers (and Chrome's PWA standalone) aggressively pause background
+// tabs — the realtime websocket disconnects and any changes made on the OTHER
+// device while we slept are missed. When the tab becomes visible / focused
+// again we force a fresh pull so the user sees the latest state.
+let visibilityAttached = false;
+function attachVisibilityRefresh() {
+  if (visibilityAttached) return;
+  if (typeof document === 'undefined') return;
+  visibilityAttached = true;
+
+  const refresh = () => {
+    if (!currentUserId) return;
+    if (document.visibilityState === 'visible') void pullAll(currentUserId);
+  };
+  document.addEventListener('visibilitychange', refresh);
+  window.addEventListener('focus', refresh);
 }
 
 // Call on sign-out. Stops realtime + watcher AND wipes local state back to

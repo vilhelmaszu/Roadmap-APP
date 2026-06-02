@@ -155,7 +155,11 @@ export default function Notes() {
                   minHeight: 120,
                 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="document-text" size={16} color={theme.colors.primary} />
+                  <Ionicons
+                    name={n.secure ? 'lock-closed' : 'document-text'}
+                    size={16}
+                    color={n.secure ? theme.colors.warning : theme.colors.primary}
+                  />
                   <AppText weight="700" size={15} numberOfLines={1} style={{ flex: 1 }}>
                     {tSeed(n.title, lang) || 'Untitled note'}
                   </AppText>
@@ -187,7 +191,9 @@ export default function Notes() {
                   </View>
                 </View>
                 <AppText color="textMuted" size={13} weight="500" numberOfLines={5}>
-                  {tSeed(n.body, lang) || 'Empty — tap to write.'}
+                  {n.secure
+                    ? 'Encrypted — tap to unlock and read.'
+                    : tSeed(n.body, lang) || 'Empty — tap to write.'}
                 </AppText>
               </Pressable>
             );

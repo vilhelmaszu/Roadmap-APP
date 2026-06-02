@@ -150,13 +150,17 @@ export default function Roadmap() {
                     gap: 2,
                   }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                    <Ionicons name="document-text-outline" size={13} color={theme.colors.primary} />
+                    <Ionicons
+                      name={n.secure ? 'lock-closed' : 'document-text-outline'}
+                      size={13}
+                      color={n.secure ? theme.colors.warning : theme.colors.primary}
+                    />
                     <AppText weight="700" size={13} numberOfLines={1} style={{ flex: 1 }}>
                       {tSeed(n.title, lang) || 'Untitled note'}
                     </AppText>
                   </View>
                   <AppText color="textMuted" size={11} weight="500" numberOfLines={1}>
-                    {tSeed(n.body, lang) || 'Empty — tap to write.'}
+                    {n.secure ? 'Encrypted' : tSeed(n.body, lang) || 'Empty — tap to write.'}
                   </AppText>
                 </Pressable>
               ))}

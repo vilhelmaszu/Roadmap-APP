@@ -11,6 +11,7 @@ import { AccountChip } from '@/components/AccountChip';
 import { OnboardingOverlay } from '@/components/OnboardingOverlay';
 import { Sidebar } from '@/components/Sidebar';
 import { I18nProvider } from '@/i18n';
+import { attachInstallListener } from '@/services/install';
 import { configureNotifications } from '@/services/notifications';
 import { attachAuthListener } from '@/services/sync';
 import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
@@ -35,6 +36,9 @@ export default function RootLayout() {
     configureNotifications();
     // Wire up Supabase auth → start/stop sync. No-op if Supabase isn't configured.
     attachAuthListener();
+    // Capture the PWA install prompt as early as possible — the event fires
+    // once on first load and gets lost if we subscribe lazily.
+    attachInstallListener();
 
     // PWA bits — web only.
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;

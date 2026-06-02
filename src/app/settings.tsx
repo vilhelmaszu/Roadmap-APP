@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, TextInput, View } from 'react-native';
 
 import { ConfirmModal } from '@/components/ConfirmModal';
@@ -9,7 +9,10 @@ import { Project } from '@/domain/types';
 import { useI18n } from '@/i18n';
 import { tSeed } from '@/i18n/seedI18n';
 import { signInWithGoogle, signOut, useAuthUser } from '@/services/auth';
+import { triggerInstall, useInstallState } from '@/services/install';
 import { supabaseConfigured } from '@/services/supabase';
+import { isVaultUnlocked, lockVault, onVaultLockChange } from '@/services/vault';
+import { VaultUnlockModal } from '@/components/VaultUnlockModal';
 import { useStore } from '@/store/store';
 import { DESIGNS } from '@/theme/design';
 import { Radius, Space, THEMES, themeUnlocked, UnlockContext, unlockLabel } from '@/theme/themes';
@@ -95,6 +98,12 @@ export default function Settings() {
 
       {/* Cloud sign-in (Supabase) */}
       <AccountCard />
+
+      {/* Install as PWA */}
+      <InstallCard />
+
+      {/* Secure vault for encrypted notes (API keys etc.) */}
+      <VaultCard />
 
       {/* Projects management */}
       <ProjectsCard />
@@ -554,6 +563,187 @@ function AccountCard() {
           ) : null}
         </View>
       )}
+    </Card>
+  );
+}
+
+// Install card — surfaces Chrome's deferred install prompt as an explicit
+// button. iOS Safari doesn't fire `beforeinstallprompt`, so we show
+// Add-to-Home-Screen instructions instead.
+function InstallCard() {
+  const { theme } = useTheme();
+  const { isWeb, isIOS, installed, canInstall } = useInstallState();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // Native builds — install via the app store / sideload flow, not this card.
+  if (!isWeb) return null;
+
+  const onInstall = async () => {
+    setBusy(true);
+    setMsg(null);
+    const outcome = await triggerInstall();
+    setBusy(false);
+    if (outcome === 'accepted') setMsg('Installing…');
+    else if (outcome === 'dismissed') setMsg('Install dismissed — you can try again any time.');
+    else setMsg('Your browser hasn’t offered an install prompt yet. Try reloading the page and waiting a few seconds.');
+  };
+
+  return (
+    <Card>
+      <SectionHeader title="Install" />
+      {installed ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Ionicons name="checkmark-circle" size={18} color={theme.colors.success} />
+          <AppText size={13} weight="700">
+            Installed — Roadmap is running as an app.
+          </AppText>
+        </View>
+      ) : isIOS ? (
+        <View style={{ gap: Space.sm }}>
+          <AppText color="textMuted" size={13} weight="500">
+            iOS doesn&rsquo;t offer an install button. To add Roadmap to your home screen:
+          </AppText>
+          <AppText size={13} weight="600">
+            1. Tap the Share button (square with up-arrow) in Safari{'\n'}
+            2. Scroll down and tap &ldquo;Add to Home Screen&rdquo;{'\n'}
+            3. Tap &ldquo;Add&rdquo;
+          </AppText>
+        </View>
+      ) : (
+        <View style={{ gap: Space.md }}>
+          <AppText color="textMuted" size={13} weight="500">
+            Install Roadmap on this device so it launches like a native app
+            (full screen, on your home screen, faster cold-starts, works offline).
+          </AppText>
+          <Pressable
+            onPress={onInstall}
+            disabled={busy || !canInstall}
+            style={{
+              alignSelf: 'flex-start',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              paddingHorizontal: Space.lg,
+              paddingVertical: Space.sm,
+              borderRadius: Radius.pill,
+              backgroundColor: canInstall ? theme.colors.primary : theme.colors.surfaceAlt,
+              opacity: busy ? 0.6 : 1,
+            }}>
+            <Ionicons
+              name="download-outline"
+              size={16}
+              color={canInstall ? theme.colors.primaryText : theme.colors.textMuted}
+            />
+            <AppText
+              weight="800"
+              size={13}
+              color={canInstall ? 'primaryText' : 'textMuted'}>
+              {busy ? 'Installing…' : 'Install Roadmap'}
+            </AppText>
+          </Pressable>
+          {!canInstall ? (
+            <AppText size={11} weight="600" color="textFaint">
+              No install prompt available yet. Reload the page and wait a few seconds
+              — Chrome only offers it after the page has registered as a real PWA.
+            </AppText>
+          ) : null}
+          {msg ? (
+            <AppText size={12} weight="600" color="textMuted">
+              {msg}
+            </AppText>
+          ) : null}
+        </View>
+      )}
+    </Card>
+  );
+}
+
+// Vault card — shows the lock state and lets the user unlock / lock without
+// having to open a specific encrypted note first.
+function VaultCard() {
+  const { theme } = useTheme();
+  const [, force] = useState(0);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+
+  useEffect(() => onVaultLockChange(() => force((x) => x + 1)), []);
+
+  const notes = useStore((s) => s.notes);
+  const encryptedCount = notes.filter((n) => n.secure).length;
+  const unlocked = isVaultUnlocked();
+
+  return (
+    <Card>
+      <SectionHeader title="Vault" />
+      <AppText color="textMuted" size={13} weight="500" style={{ marginBottom: Space.md }}>
+        Encrypt sensitive notes (API keys, passwords) so they&apos;re unreadable on
+        the server and after sign-out. One passphrase covers all your encrypted
+        notes; it lives only in this browser tab&apos;s memory.
+      </AppText>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: Space.md, flexWrap: 'wrap' }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            paddingHorizontal: Space.md,
+            paddingVertical: 5,
+            borderRadius: Radius.pill,
+            backgroundColor: unlocked ? theme.colors.success + '22' : theme.colors.surfaceAlt,
+            borderWidth: 1,
+            borderColor: unlocked ? theme.colors.success : theme.colors.border,
+          }}>
+          <Ionicons
+            name={unlocked ? 'lock-open' : 'lock-closed'}
+            size={13}
+            color={unlocked ? theme.colors.success : theme.colors.textMuted}
+          />
+          <AppText
+            size={12}
+            weight="800"
+            style={{ color: unlocked ? theme.colors.success : theme.colors.textMuted }}>
+            {unlocked ? 'UNLOCKED' : 'LOCKED'}
+          </AppText>
+        </View>
+        <AppText size={12} weight="600" color="textMuted">
+          {encryptedCount} encrypted {encryptedCount === 1 ? 'note' : 'notes'}
+        </AppText>
+        <View style={{ flex: 1 }} />
+        {unlocked ? (
+          <Pressable
+            onPress={lockVault}
+            style={{
+              paddingHorizontal: Space.md,
+              paddingVertical: 6,
+              borderRadius: Radius.pill,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+            }}>
+            <AppText weight="700" size={12} color="textMuted">
+              Lock vault
+            </AppText>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={() => setUnlockOpen(true)}
+            style={{
+              paddingHorizontal: Space.md,
+              paddingVertical: 6,
+              borderRadius: Radius.pill,
+              backgroundColor: theme.colors.primary,
+            }}>
+            <AppText weight="800" size={12} color="primaryText">
+              Unlock
+            </AppText>
+          </Pressable>
+        )}
+      </View>
+      <VaultUnlockModal
+        visible={unlockOpen}
+        mode={encryptedCount === 0 ? 'setup' : 'unlock'}
+        onCancel={() => setUnlockOpen(false)}
+        onUnlocked={() => setUnlockOpen(false)}
+      />
     </Card>
   );
 }
