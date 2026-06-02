@@ -115,10 +115,11 @@ type Goal = {
 type Note = {
   id: string;
   title: string;
-  body: string;
-  projectId?: string;   // undefined = global, visible everywhere
+  body: string;          // plaintext, OR an encrypted envelope when secure=true
+  projectId?: string;    // undefined = global, visible everywhere
   createdAt: number;
   updatedAt: number;
+  secure?: boolean;      // body holds a vault envelope (see 05-secure-vault.md)
 };
 ```
 
@@ -209,8 +210,21 @@ The full Zustand state ([`src/store/store.ts`](../src/store/store.ts)):
   onboarded: boolean;
   lastLevelUp: number | null;    // celebration trigger
   lastBadgeId: string | null;    // celebration trigger
+  // --- Sync layer state (see 07-sync-explained.md) ---
+  lastSyncAt: number;            // ms timestamp of last successful pull
+  tombstones: {
+    goals: string[];
+    notes: string[];
+    projects: string[];
+    sets: string[];
+  };
 }
 ```
+
+`lastSyncAt` and `tombstones` drive the sync layer's merge correctness.
+Every delete action populates the appropriate tombstone array; the sync's
+`pushAll` clears them after a successful upload. See the sync doc for the
+full algorithm.
 
 Actions all live on the same store object — see the `Actions` type in
 store.ts for the full list (`addGoal`, `toggleGoalDone`, `addNote`,

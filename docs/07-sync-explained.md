@@ -48,25 +48,55 @@ The Zustand store is what the UI reads. AsyncStorage is the durable
 single-device backup. Supabase is the durable cross-device backup AND the
 broadcast channel.
 
-## The four lifecycle events
+## The state that drives sync
 
-Sync is event-driven. Four moments matter:
+Three persisted fields on the Zustand state (`src/store/store.ts`) carry the
+information the sync layer needs to do its job correctly:
+
+```ts
+type State = {
+  // ... the usual data ...
+  lastSyncAt: number;                          // ms timestamp of last successful pull
+  tombstones: {
+    goals: string[];
+    notes: string[];
+    projects: string[];
+    sets: string[];
+  };
+};
+```
+
+- **`lastSyncAt`** — set to `Date.now()` after every successful pull. Used by
+  the merge to decide whether a local-only row is "pending push" (created
+  after the last pull) or "cloud-deleted" (existed at last pull, gone now).
+  `0` means "never synced on this device" → falls back to preserve-all
+  semantics so a brand-new install doesn't lose its seed data.
+- **`tombstones`** — per-table list of row IDs that the user deleted locally.
+  Persisted so a delete survives a tab close before the push had time to
+  fire. Cleared after a successful `pushAll` (the deletes have now reached
+  cloud).
+
+## The five lifecycle events
+
+Sync is event-driven. Five moments matter:
 
 ### Event 1: App loads (signed in already)
 
-1. `_layout.tsx` `useEffect` calls `attachAuthListener()`
+1. `_layout.tsx` `useEffect` calls `attachAuthListener()` once at boot
 2. `attachAuthListener` first runs `sb.auth.getUser()` — Supabase reads the
    token from AsyncStorage; if valid, returns the user
 3. If user is non-null → `startSync(userId)` fires
 4. `startSync` does this in order:
    - `pullAll(userId)` — fetches all 5 tables for this user from Supabase
-   - For each table: if cloud has rows, use them; if cloud is empty, keep
-     whatever local has (preserve-on-empty — see "Why this matters" below)
-   - Pushes the merged state back up so any per-table gaps in cloud get
-     filled
+     and merges with local using `mergePull`
+   - `pushAll()` — uploads the merged state back to cloud so cross-device
+     gaps fill in (e.g. cloud was missing data because a prior push failed)
    - `startRealtime(userId)` — subscribes to a websocket per table
    - `startStoreWatcher()` — subscribes to Zustand changes so future edits
      trigger pushes
+   - `attachVisibilityRefresh()` — wires a `visibilitychange` + `focus`
+     listener that re-pulls when the tab comes back into focus (essential
+     for mobile Chrome where backgrounded tabs lose their websocket)
 
 ### Event 2: User clicks "Sign in with Google" (was signed out)
 
@@ -85,6 +115,7 @@ listener calls `startSync(userId)`, the lifecycle above runs.
 7. After 600ms idle, `pushAll()` fires — full reconcile per table:
    - Upsert all current local rows into Supabase (creates or updates them)
    - Delete any Supabase rows whose ids aren't in local (so deletes propagate)
+   - Clear `tombstones` (the rows we tombstoned are gone from cloud now too)
 8. Supabase Postgres processes the upserts and deletes
 9. Supabase's Realtime engine emits row-change events on the channel for this user
 10. Every other connected device subscribed to this user's channel receives
@@ -101,6 +132,65 @@ listener calls `startSync(userId)`, the lifecycle above runs.
    - Clears the debounce timer
    - Calls `useStore.getState().resetAll()` — wipes local state to initial
 5. UI re-renders with empty data; chip flips to "Sign in with Google"
+
+### Event 5: User taps "Sync now" in Settings → Account
+
+1. `forceSync()` runs (exported from `sync.ts`)
+2. Clears any pending debounce timer
+3. Calls `pushAll()` immediately — uploads any local changes that hadn't pushed yet
+4. Then calls `pullAll(currentUserId)` — gets the freshest cloud state
+5. The button (`SyncButton` in `settings.tsx`) subscribes to `onSyncStatus`
+   and shows "Syncing…" while running, "Retry sync" on error
+
+This is the escape hatch when something feels off — stale data, suspected
+missed realtime event, deletes that didn't propagate within a few seconds.
+
+## The merge — `mergePull(cloud, local, lastSyncAt, tombstones)`
+
+The heart of sync correctness. Lives in `src/services/sync.ts`. Each pull
+runs it per table. Three steps:
+
+```ts
+function mergePull<T extends { id: string; createdAt: number }>(
+  cloud: T[],
+  local: T[],
+  lastSyncAt: number,
+  tombstones: string[],
+): T[] {
+  // 1. Drop cloud rows whose IDs are tombstoned — we deleted them locally,
+  //    cloud just hasn't caught up yet. Without this, the next pull would
+  //    resurrect a deleted row that the (not-yet-flushed) push would
+  //    otherwise have removed.
+  const ts = new Set(tombstones);
+  const cloudFiltered = cloud.filter((x) => !ts.has(x.id));
+
+  // 2. First-ever sync (lastSyncAt = 0) → preserve all local rows. Avoids
+  //    wiping a fresh install's seed on its first cloud query.
+  if (cloudFiltered.length === 0 && lastSyncAt === 0) return local;
+
+  // 3. For each local row not in the (filtered) cloud:
+  //      createdAt > lastSyncAt → added locally since our last pull → pending push, KEEP
+  //      createdAt ≤ lastSyncAt → existed at last pull, gone now → cloud deleted it, DROP
+  //    First-ever pull (lastSyncAt = 0) → keep everything.
+  const cloudIds = new Set(cloudFiltered.map((x) => x.id));
+  const localOnly = local.filter((x) => !cloudIds.has(x.id));
+  const pendingPush = lastSyncAt === 0
+    ? localOnly
+    : localOnly.filter((x) => x.createdAt > lastSyncAt);
+
+  return [...cloudFiltered, ...pendingPush];
+}
+```
+
+The three rules together give us:
+- **Cross-device propagation** — cloud rows always come through
+- **Pending-push survival** — a row you added but reloaded before push fired
+  doesn't get wiped on the next pull
+- **Cross-device deletes** — a row another device deleted gets cleaned up
+  locally on the next pull
+- **Locally-staged deletes** — a delete you made but couldn't push (offline,
+  tab closed) survives reload via tombstones, and the next push reconciles
+  cloud
 
 ## A concrete walkthrough: edit on phone → see on PC
 
@@ -132,83 +222,93 @@ PHONE (Chrome PWA)                  CLOUD (Supabase)              PC (Chrome bro
    for +600ms
 
 6. After 600ms idle, pushAll() runs:
-   POST /rest/v1/goals
-   { id: 'xyz', title: 'Post on IG...', user_id: 'abc-123', ... }
+   POST /rest/v1/goals (upsert all)
+   DELETE /rest/v1/goals?id=not.in.(...)
                                         ─────────────►
                                         Supabase Postgres
-                                        INSERT INTO goals (...)
-                                        VALUES (...);
-
-                                        Postgres trigger sets
-                                        updated_at = now()
+                                        INSERT INTO goals (...);
+                                        Postgres trigger touches updated_at.
 
                                         Supabase Realtime
-                                        broadcasts row-change
+                                        broadcasts the row-change
                                                                   ─────────────►
                                                                   Realtime channel `sync:goals`
-                                                                  filter: user_id=eq.abc-123
-                                                                  fires onChange callback
+                                                                  filter: user_id=eq.abc-123 fires.
+                                                                  Handler calls pullAll(userId).
 
-                                                                  Our handler calls pullAll(userId)
+                                                                  pullAll fetches every goal for user;
+                                                                  finds the new row + 127 others.
 
-                                                                  Pull fetches all goals for user
-                                                                  Gets 128 goals (was 127)
+                                                                  mergePull(
+                                                                    cloud=[128 goals incl. new],
+                                                                    local=[127 prior goals],
+                                                                    lastSyncAt=T_last,
+                                                                    tombstones=[]
+                                                                  ) → [128 goals]
 
-                                                                  Calls useStore.setState({
-                                                                    goals: [...all 128 goals],
-                                                                    ...
-                                                                  })
+                                                                  useStore.setState({ goals, lastSyncAt: pullStartedAt })
 
-                                                                  Zustand notifies subscribers
-
-                                                                  React components re-render
-
-                                                                  Dashboard shows "Post on IG..."
-                                                                  in the SIDE GOALS list
+                                                                  React re-renders; Dashboard's
+                                                                  SIDE GOALS list shows the new entry.
 ```
 
 End-to-end time on a healthy connection: ~1–3 seconds.
 
-## Why "preserve on empty" matters (the bug we hit)
+## A concrete walkthrough: delete on phone with no connection
 
-When sync first launched, the goals table in Supabase was missing the `side`
-column. Every push attempt to upsert goals returned 400 from Postgres. We
-swallowed the error.
+This is the tombstone scenario that broke before — and now works:
 
-What happened next:
+```
+PHONE                               CLOUD                         PC
+─────────────────────────────────   ──────────────────            ─────────────────────────────────────
 
-1. PC signed in. pullAll ran. Cloud had projects + notes (from earlier
-   pushes that didn't include `side` in the row), but 0 goals (because
-   upserts had been failing).
-2. Old pullAll code did:
-   `useStore.setState({ goals: [], projects: [...], notes: [...] })`
-3. PC's local 127 goals from the seed were WIPED — replaced by empty cloud.
-4. Phone signed in. Pulled the same: 0 goals.
-5. User: "where are my goals?"
+1. You tap trash on goal G.
+   deleteGoal(G_id) action runs.
+   state.goals filter removes G.
+   tombstones.goals: ['G_id']
 
-The fix in two parts:
+2. schedulePush queues 600ms timer.
 
-**Part 1: preserve local on empty (per-table)**
+3. You close the PWA tab IMMEDIATELY
+   (within 600ms). Timer canceled.
+   Push never fires.
+                                        Cloud still has G.
 
-```ts
-goals: goals.length > 0 ? goals : s.goals,
+4. You re-open the PWA later.
+   persist hydrates state:
+     goals: [...without G],
+     tombstones.goals: ['G_id'],
+     lastSyncAt: T_prior_pull.
+
+5. startSync runs:
+   pullAll → cloud still has G.
+   mergePull filters G out via tombstone.
+   merged.goals = [...without G].
+   state.goals stays clean.
+
+6. pushAll fires:
+   upsert all current local goals
+   delete-not-in removes G from cloud.
+   tombstones cleared.
+                                        Cloud now without G.
+                                        Realtime broadcasts.
+                                                                  ─────────────►
+                                                                  PC's realtime fires pullAll.
+                                                                  PC's local goals minus G now
+                                                                  (createdAt < lastSyncAt, not in cloud → drop).
 ```
 
-If cloud returned 0 goals but local has goals (from seed or any source),
-keep the local goals.
+## Why the visibility refresh matters
 
-**Part 2: always push after pull**
+Mobile browsers (especially Chrome's PWA standalone) pause backgrounded
+tabs aggressively. The realtime websocket disconnects within seconds of
+the tab leaving the foreground. When the user comes back, no event arrives
+to tell our code "you missed changes."
 
-```ts
-await pullAll(userId);
-await pushAll();  // <-- this is new
-```
-
-Old code only pushed if cloud was 100% empty. New code always pushes after
-pull, so per-table gaps (like "cloud has notes but no goals") get filled
-from local data.
-
-Together these two changes make sync resilient to partial-cloud states.
+`attachVisibilityRefresh()` listens for `document.visibilitychange` (state
+→ 'visible') and `window.focus`, and calls `pullAll(currentUserId)` on
+either. Result: switching to the Roadmap tab triggers a fresh pull within
+a second of focus.
 
 ## Why full-table reconcile and not row-by-row diffs
 
@@ -266,8 +366,7 @@ Not a problem in your situation.
 - Theme + design preference — local to each device on purpose (you might
   want dark on phone, light on PC)
 - Language preference (`roadmap.lang`) — also local
-- Onboarding state (`onboarded`) — synced via profile but doesn't reset
-  the overlay if you re-sign in elsewhere
+- Vault passphrase — by design, only ever in memory of the current tab
 - Notifications scheduling state — device-specific, can't be synced
 
 ## What could go wrong, and how you'd know
@@ -281,14 +380,33 @@ async function check(label, p) {
 }
 ```
 
-So if anything breaks (missing column, RLS reject, network error), you see
-a red line in DevTools console starting with `[sync]`. Future debugging is
-just "open DevTools console after the broken action".
+So if anything breaks (missing column, RLS reject, network error, integer
+overflow), you see a red line in DevTools console starting with `[sync]`.
+
+Two real failures we hit + fixed during initial setup:
+- `value "-1780409525388" is out of range for type integer` →
+  `goals.order` was `int4`, we set it to `-Date.now()` which overflows.
+  Fix: `alter table public.goals alter column "order" type bigint`.
+- `column goals.side does not exist` → schema.sql was run before we added
+  the `side` column. Fix: `alter table public.goals add column if not
+  exists side boolean default false`.
+
+Both ALTERs are in [`supabase/schema.sql`](../supabase/schema.sql) for
+fresh installs.
 
 ## Files that drive this
 
-- [`src/services/sync.ts`](../src/services/sync.ts) — every word above lives in this file
-- [`src/services/supabase.ts`](../src/services/supabase.ts) — the client construction
-- [`src/services/auth.ts`](../src/services/auth.ts) — sign-in / sign-out + auth state hook
-- [`src/app/_layout.tsx`](../src/app/_layout.tsx) — calls `attachAuthListener()` once at boot
-- [`supabase/schema.sql`](../supabase/schema.sql) — the table shapes + RLS policies that make this safe
+- [`src/services/sync.ts`](../src/services/sync.ts) — every word above
+  lives in this file
+- [`src/services/supabase.ts`](../src/services/supabase.ts) — the client
+  construction
+- [`src/services/auth.ts`](../src/services/auth.ts) — sign-in / sign-out
+  + auth state hook
+- [`src/store/store.ts`](../src/store/store.ts) — the `lastSyncAt`,
+  `tombstones` state + every delete action that populates tombstones
+- [`src/app/_layout.tsx`](../src/app/_layout.tsx) — calls
+  `attachAuthListener()` once at boot
+- [`src/app/settings.tsx`](../src/app/settings.tsx) — `SyncButton` →
+  `forceSync()` wired to the "Sync now" UI
+- [`supabase/schema.sql`](../supabase/schema.sql) — the table shapes + RLS
+  policies that make this safe

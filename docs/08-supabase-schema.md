@@ -130,7 +130,8 @@ estimate_min int
 depends_on   text[]
 recurrence   text              -- 'none' | 'daily' | 'weekly' | 'monthly'
 reminders    jsonb             -- Reminder[]
-"order"      int               -- quoted because "order" is a SQL reserved word
+"order"      bigint            -- quoted (SQL reserved word); bigint because
+                               -- order: -Date.now() overflows int4 (2.1B max)
 habit_id     text
 frozen       boolean
 done         boolean not null
@@ -140,11 +141,22 @@ points       jsonb default '[]'   -- PlanPoint[]
 created_at   timestamptz
 updated_at   timestamptz
 archived     boolean
-side         boolean default false   -- added later — see Side Goals doc
+side         boolean default false   -- side goal flag (see 04-side-goals.md)
 primary key (user_id, id)
 ```
 
-Note the `"order"` column name needs double-quoting in SQL because `order`
+Two columns with histories worth noting:
+
+- **`"order"` is bigint, not int.** The store sets `order: -Date.now()`
+  (a "newest on top" hack producing 13-digit negatives). That overflows
+  int4 — Postgres rejected every goal upsert with `value "-1780409525388"
+  is out of range for type integer`. Bigint can hold ~9 quintillion.
+  Backfill ALTER included in schema.sql.
+- **`side` was added after the initial schema.** Same pattern as `secure`
+  in notes — a missing column makes every upsert 400 and silently breaks
+  sync. Both backfill ALTERs live at the bottom of the table block.
+
+The `"order"` column name needs double-quoting in SQL because `order`
 is a reserved word.
 
 ### `notes`
@@ -153,11 +165,16 @@ id          text
 user_id     uuid references auth.users(id) on delete cascade
 project_id  text                 -- null = global note
 title       text not null
-body        text not null default ''
+body        text not null default ''     -- encrypted envelope when secure=true
+secure      boolean default false        -- encrypted via Web Crypto (see vault doc)
 created_at  timestamptz
 updated_at  timestamptz
 primary key (user_id, id)
 ```
+
+The `secure` column was added after the vault feature shipped. If you're
+re-running schema.sql on an existing project, the additive ALTER at the
+bottom of the table block handles the upgrade.
 
 ### `goal_sets`
 ```sql

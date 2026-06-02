@@ -12,8 +12,9 @@ Three things, none optional:
 3. **Service worker** — a JS script that runs in the browser's background,
    serving cached assets even when offline
 
-If all three are present, Chrome/Edge offer an "Install" option. We give
-this a button in Settings via [`src/services/install.ts`](../src/services/install.ts).
+If all three are present, Chrome/Edge offer an "Install" option. We surface
+this as an explicit button in Settings via
+[`src/services/install.ts`](../src/services/install.ts).
 
 ## The manifest
 
@@ -59,21 +60,34 @@ if (!document.querySelector('link[rel="manifest"]')) {
 }
 ```
 
-## The service worker
+## The service worker — `public/sw.js`
 
-[`public/sw.js`](../public/sw.js).
+A tiny JS file the browser runs in the background. Once installed it
+intercepts every network request the page makes. Our strategy depends on
+what kind of request:
 
-The service worker is a tiny JS file the browser runs in the background.
-Once installed it intercepts every network request the page makes. Ours
-uses a cache-first strategy for same-origin assets so the app shell loads
-instantly even offline.
+| Request type | Strategy | Why |
+|---|---|---|
+| **HTML navigations** (`/`, any route) | **Network-first** | Fresh deploys need to deliver the new HTML so users get the new bundle hash inside it. Falls back to cached HTML when offline. |
+| **manifest.webmanifest** | Network-first | Install metadata should stay current. |
+| **Hashed static assets** (`/_expo/static/js/...`, images) | **Cache-first** | Filenames contain content hashes; a cached copy is guaranteed to still be valid. Different content → different URL. |
+| **Cross-origin** (Supabase API, fonts CDN) | Skip — pass to network | Sync requests must always hit live cloud; we don't cache them. |
+
+This split is **critical**. The original SW was cache-first for everything,
+which permanently stuck installed users on whatever index.html they first
+saw — pointing at an old hashed bundle URL that no longer existed. Fresh
+deploys never reached their PWA. The network-first split for navigations
+fixes that for good.
+
+### Code
 
 ```js
-const CACHE_VERSION = 'roadmap-v2';
+const CACHE_VERSION = 'roadmap-v5';
+const APP_SHELL = ['/', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_VERSION).then((cache) =>
-    cache.addAll(['/', '/manifest.webmanifest']).catch(() => undefined)));
+    cache.addAll(APP_SHELL).catch(() => undefined)));
   self.skipWaiting();   // activate immediately, don't wait for tabs to close
 });
 
@@ -87,49 +101,49 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;  // skip cross-origin (Supabase API, fonts)
+  if (url.origin !== self.location.origin) return;   // skip cross-origin
 
-  event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((res) => {
-        if (res.ok && (res.type === 'basic' || res.type === 'default')) {
-          const copy = res.clone();
-          caches.open(CACHE_VERSION).then((c) => c.put(req, copy)).catch(() => undefined);
-        }
-        return res;
-      }).catch(() => {
-        if (req.mode === 'navigate') return caches.match('/');
-        return Response.error();
-      });
-    })
-  );
+  const isNavigation = req.mode === 'navigate' || req.destination === 'document';
+  const isManifest = url.pathname === '/manifest.webmanifest';
+  if (isNavigation || isManifest) {
+    event.respondWith(networkFirst(req));
+    return;
+  }
+  event.respondWith(cacheFirst(req));
 });
 ```
 
 ### What this gets you
 
-- **Offline app shell** — the HTML, JS, CSS, icons are cached after first
-  load. Lose connectivity → app still launches, still navigates between
-  screens, still works with local data.
-- **Instant cold-starts** — even with connectivity, cached assets serve
-  in <50ms.
-- **Network for API** — Supabase calls go straight to network (cross-origin
-  is skipped by the fetch handler) so they always hit the live cloud.
+- **Fresh deploys actually reach the installed PWA** — network-first HTML
+  fetches the new index.html (pointing at new hashed bundle) the moment the
+  user opens the app while online
+- **Offline app shell** — when offline, networkFirst falls back to cached
+  HTML; static assets serve from cache
+- **Instant warm starts** — cached hashed bundles serve in <50ms
 
-### The big gotcha — cache invalidation
+### The big gotcha — `CACHE_VERSION` bumps
 
-Cache-first means once a JS bundle is cached, the browser serves it forever
-until the SW updates AND `CACHE_VERSION` changes. If you ship new code but
-don't bump the version, users stay on the old bundle indefinitely.
+Even with network-first navigation, you should still bump `CACHE_VERSION`
+on each release for two reasons:
+
+1. The `activate` event uses it to evict old caches (otherwise old hashed
+   bundles pile up forever)
+2. It changes the SW file content, which Chrome detects and uses to install
+   the new SW
 
 **Rule: bump `CACHE_VERSION` in `public/sw.js` on every release that ships
-JS changes.** We hit this exact bug — user saw fixes deployed to Cloudflare
-but their browser kept serving the old cached version until we bumped from
-`roadmap-v1` to `roadmap-v2`.
+JS changes.** We've gone through `v1` → `v2` → `v3` → `v4` → `v5`. Each
+bump matched a deploy.
 
-To force-update a stuck user: tell them DevTools → Application →
+To force-update a stuck user (PC): tell them DevTools → Application →
 Service Workers → Unregister → Storage → Clear site data → reload.
+To force-update a stuck installed PWA on Android: long-press app icon →
+App info → Storage → Clear data → relaunch (you'll be signed out).
+
+The new **Restart button in the sidebar** (`src/components/Sidebar.tsx`)
+calls `navigator.serviceWorker.getRegistration().then(reg => reg?.update())`
+before `location.reload()`, so most updates land without manual intervention.
 
 ## The install flow
 
@@ -148,9 +162,9 @@ The event fires once per page load, on browsers that decide the PWA is
 installable. We `preventDefault` to keep the prompt usable later, store it
 in a module-level variable, and wake any React components subscribed.
 
-The Settings `InstallCard` calls `triggerInstall()` when the user clicks
-the button, which calls `deferredPrompt.prompt()` to show Chrome's
-native install dialog.
+The Settings → Install card (`InstallCard` in `src/app/settings.tsx`) calls
+`triggerInstall()` when the user clicks the button, which calls
+`deferredPrompt.prompt()` to show Chrome's native install dialog.
 
 ### What makes a PWA "installable" in Chrome's eyes
 
@@ -171,6 +185,23 @@ Doesn't fire `beforeinstallprompt`. Doesn't support `triggerInstall()` at
 all. Users have to manually do **Share → Add to Home Screen**. The
 InstallCard detects iOS via user-agent and shows those 3 steps as
 instructions instead of a button.
+
+## The Restart button in the Sidebar
+
+A small refresh icon next to the ROADMAP % footer (sidebar bottom). On the
+narrow icon-rail sidebar (mobile) it's the same icon below the %. Tapping it:
+
+1. Asks the current SW to `.update()` — if a newer SW exists at the URL,
+   it installs in the background
+2. Calls `window.location.reload()` — reloads the page, which (with the
+   new SW network-first strategy) gets the freshest HTML and bundle
+
+It **does not** delete any data. No sign-out, no cache wipe, no state reset.
+Same effect as Ctrl+R in a regular browser tab. Exists because the
+standalone PWA hides the browser's own reload button.
+
+Code lives in [`src/components/Sidebar.tsx`](../src/components/Sidebar.tsx) →
+`RestartButton`.
 
 ## Icons
 

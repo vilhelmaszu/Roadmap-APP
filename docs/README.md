@@ -24,6 +24,10 @@ Everything we built, explained. Pick a topic.
 - [**09-pwa.md**](./09-pwa.md) — manifest, service worker, install flow
 - [**10-cloudflare-deploy.md**](./10-cloudflare-deploy.md) — how Cloudflare Pages builds and serves the app
 
+## Look & feel
+
+- [**12-themes.md**](./12-themes.md) — all 25 color themes + the timeframe palette + how to add a new one
+
 ## Big-picture learning
 
 - [**11-autonomous-agents.md**](./11-autonomous-agents.md) — what agents are, what they do, where they live, examples for morimake
