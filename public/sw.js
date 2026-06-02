@@ -11,7 +11,7 @@
 // Bump this on each release so old cached bundles get evicted and the new
 // build actually reaches users. (Forgetting to bump leaves users on a stale
 // bundle indefinitely because the fetch handler is cache-first.)
-const CACHE_VERSION = 'roadmap-v2';
+const CACHE_VERSION = 'roadmap-v3';
 const APP_SHELL = ['/', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
