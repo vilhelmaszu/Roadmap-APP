@@ -53,7 +53,7 @@ create table if not exists public.goals (
   depends_on text[],
   recurrence text,
   reminders jsonb,
-  "order" int,
+  "order" bigint,
   habit_id text,
   frozen boolean default false,
   done boolean not null default false,
@@ -69,6 +69,8 @@ create table if not exists public.goals (
 
 -- Existing installs (schema.sql was run before `side` was added) — additive backfill.
 alter table public.goals add column if not exists side boolean default false;
+-- Goals use `order: -Date.now()` which exceeds int4's 2.1B range; promote to bigint.
+alter table public.goals alter column "order" type bigint;
 
 create table if not exists public.notes (
   id text not null,
