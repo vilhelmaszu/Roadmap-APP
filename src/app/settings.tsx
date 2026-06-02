@@ -11,6 +11,7 @@ import { tSeed } from '@/i18n/seedI18n';
 import { signInWithGoogle, signOut, useAuthUser } from '@/services/auth';
 import { triggerInstall, useInstallState } from '@/services/install';
 import { supabaseConfigured } from '@/services/supabase';
+import { forceSync, getSyncStatus, onSyncStatus } from '@/services/sync';
 import { isVaultUnlocked, lockVault, onVaultLockChange } from '@/services/vault';
 import { VaultUnlockModal } from '@/components/VaultUnlockModal';
 import { useStore } from '@/store/store';
@@ -518,22 +519,24 @@ function AccountCard() {
           <AppText weight="700" size={14}>
             Signed in as {user.email ?? user.name ?? user.id}
           </AppText>
-          <Pressable
-            onPress={doSignOut}
-            disabled={busy}
-            style={{
-              alignSelf: 'flex-start',
-              paddingHorizontal: Space.lg,
-              paddingVertical: Space.sm,
-              borderRadius: Radius.pill,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              opacity: busy ? 0.6 : 1,
-            }}>
-            <AppText weight="700" size={13} color="textMuted">
-              Sign out
-            </AppText>
-          </Pressable>
+          <View style={{ flexDirection: 'row', gap: Space.sm, flexWrap: 'wrap' }}>
+            <SyncButton />
+            <Pressable
+              onPress={doSignOut}
+              disabled={busy}
+              style={{
+                paddingHorizontal: Space.lg,
+                paddingVertical: Space.sm,
+                borderRadius: Radius.pill,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                opacity: busy ? 0.6 : 1,
+              }}>
+              <AppText weight="700" size={13} color="textMuted">
+                Sign out
+              </AppText>
+            </Pressable>
+          </View>
         </View>
       ) : (
         <View style={{ gap: Space.md }}>
@@ -564,6 +567,40 @@ function AccountCard() {
         </View>
       )}
     </Card>
+  );
+}
+
+// "Sync now" button — calls forceSync to flush any pending pushes and pull
+// the latest cloud state. Lights up while running and surfaces errors.
+function SyncButton() {
+  const { theme } = useTheme();
+  const [status, setStatus] = useState(getSyncStatus());
+  useEffect(() => onSyncStatus(setStatus), []);
+  const busy = status === 'pulling' || status === 'pushing';
+  const label = busy ? 'Syncing…' : status === 'error' ? 'Retry sync' : 'Sync now';
+  return (
+    <Pressable
+      onPress={() => void forceSync()}
+      disabled={busy}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: Space.lg,
+        paddingVertical: Space.sm,
+        borderRadius: Radius.pill,
+        backgroundColor: status === 'error' ? theme.colors.danger : theme.colors.primary,
+        opacity: busy ? 0.6 : 1,
+      }}>
+      <Ionicons
+        name="sync"
+        size={14}
+        color={theme.colors.primaryText}
+      />
+      <AppText weight="800" size={13} color="primaryText">
+        {label}
+      </AppText>
+    </Pressable>
   );
 }
 

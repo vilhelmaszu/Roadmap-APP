@@ -52,6 +52,18 @@ type State = {
   // from "local row that was deleted on cloud after last pull". 0 = never
   // pulled (first-ever sign-in on this device).
   lastSyncAt: number;
+  // Tombstones — IDs of rows the user deleted locally but whose deletion
+  // may not have reached the cloud yet (offline, push debounce in flight,
+  // tab closed before push completed). Persisted so deletes survive restart.
+  // Pull's merge filters cloud rows whose IDs appear here so a stale cloud
+  // copy can't resurrect a locally-deleted row. Cleared per table after a
+  // successful pushAll.
+  tombstones: {
+    goals: string[];
+    notes: string[];
+    projects: string[];
+    sets: string[];
+  };
 };
 
 type AddGoalInput = {
@@ -152,6 +164,7 @@ const initial: State = {
   lastLevelUp: null,
   lastBadgeId: null,
   lastSyncAt: 0,
+  tombstones: { goals: [], notes: [], projects: [], sets: [] },
 };
 // Imports below are kept for legacy paths (importData / migrate fallbacks).
 // They no longer feed the initial state.
@@ -244,12 +257,20 @@ export const useStore = create<State & Actions>()(
           const nextActive =
             s.activeProjectId === id ? remaining[0].id : s.activeProjectId;
           const nextProject = remaining.find((p) => p.id === nextActive)!;
+          const droppedGoalIds = s.goals.filter((g) => g.projectId === id).map((g) => g.id);
+          const droppedNoteIds = s.notes.filter((n) => n.projectId === id).map((n) => n.id);
           return {
             projects: remaining,
             activeProjectId: nextActive,
             vision: nextProject.vision,
             goals: s.goals.filter((g) => g.projectId !== id),
             notes: s.notes.filter((n) => n.projectId !== id),
+            tombstones: {
+              ...s.tombstones,
+              projects: [...s.tombstones.projects, id],
+              goals: [...s.tombstones.goals, ...droppedGoalIds],
+              notes: [...s.tombstones.notes, ...droppedNoteIds],
+            },
           };
         }),
 
@@ -462,12 +483,19 @@ export const useStore = create<State & Actions>()(
         set((s) => ({ goals: s.goals.map((g) => (g.id === id ? { ...g, ...patch } : g)) })),
 
       // Deleting a goal also removes its sub-goals and clears it from any dependency lists.
+      // Tombstones for both the goal and its sub-goals so a not-yet-pushed delete
+      // doesn't get reverted by a subsequent pull from cloud.
       deleteGoal: (id) =>
-        set((s) => ({
-          goals: s.goals
-            .filter((g) => g.id !== id && g.parentId !== id)
-            .map((g) => (g.dependsOn?.includes(id) ? { ...g, dependsOn: g.dependsOn.filter((d) => d !== id) } : g)),
-        })),
+        set((s) => {
+          const childIds = s.goals.filter((g) => g.parentId === id).map((g) => g.id);
+          const removedIds = [id, ...childIds];
+          return {
+            goals: s.goals
+              .filter((g) => g.id !== id && g.parentId !== id)
+              .map((g) => (g.dependsOn?.includes(id) ? { ...g, dependsOn: g.dependsOn.filter((d) => d !== id) } : g)),
+            tombstones: { ...s.tombstones, goals: [...s.tombstones.goals, ...removedIds] },
+          };
+        }),
 
       setArchived: (id, archived) =>
         set((s) => ({ goals: s.goals.map((g) => (g.id === id ? { ...g, archived } : g)) })),
@@ -521,6 +549,7 @@ export const useStore = create<State & Actions>()(
         set((s) => ({
           sets: s.sets.filter((x) => x.id !== id),
           goals: s.goals.map((g) => (g.setId === id ? { ...g, setId: undefined } : g)),
+          tombstones: { ...s.tombstones, sets: [...s.tombstones.sets, id] },
         })),
 
       updateVision: (patch) => set((s) => withVision(s, { ...s.vision, ...patch })),
@@ -575,9 +604,20 @@ export const useStore = create<State & Actions>()(
           ),
         })),
 
-      deleteNote: (id) => set((s) => ({ notes: s.notes.filter((n) => n.id !== id) })),
+      deleteNote: (id) =>
+        set((s) => ({
+          notes: s.notes.filter((n) => n.id !== id),
+          tombstones: { ...s.tombstones, notes: [...s.tombstones.notes, id] },
+        })),
 
-      clearArchive: () => set((s) => ({ goals: s.goals.filter((g) => !g.archived) })),
+      clearArchive: () =>
+        set((s) => {
+          const droppedIds = s.goals.filter((g) => g.archived).map((g) => g.id);
+          return {
+            goals: s.goals.filter((g) => !g.archived),
+            tombstones: { ...s.tombstones, goals: [...s.tombstones.goals, ...droppedIds] },
+          };
+        }),
 
       // Wipe goals + all progress (XP, level, achievements, streaks, quests). Keeps
       // name, themes, sets, notes, vision.
@@ -696,6 +736,7 @@ export const useStore = create<State & Actions>()(
         claimedQuests: s.claimedQuests,
         onboarded: s.onboarded,
         lastSyncAt: s.lastSyncAt,
+        tombstones: s.tombstones,
       }),
       // Backfill fields added after the original v2 shape was first persisted.
       migrate: (persisted: any, version: number) => {

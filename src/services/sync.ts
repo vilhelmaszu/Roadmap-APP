@@ -248,6 +248,14 @@ async function pushAll() {
     // profile (single row per user, upsert keyed on user_id)
     await check('profile upsert', sb.from('profiles').upsert(profileToRow(s.profile, uid, s.activeProjectId, s.onboarded, s.questDate, s.claimedQuests)));
 
+    // Tombstones have now been applied to cloud (the delete-not-in calls
+    // above removed any cloud row whose id isn't in the current local list,
+    // which includes everything we tombstoned). Clear them so they don't
+    // pile up forever.
+    useStore.setState({
+      tombstones: { goals: [], notes: [], projects: [], sets: [] },
+    });
+
     setStatus('idle');
   } catch (e) {
     console.warn('[sync] push failed', e);
@@ -260,24 +268,29 @@ function quote(s: string): string {
   return `"${s.replace(/"/g, '""')}"`;
 }
 
-// Merge cloud rows with local rows. Used by pullAll. Two cases for a row
-// that's in local but NOT in cloud:
-//   - createdAt > lastSyncAt → added locally since our last successful pull,
-//     not yet pushed → PRESERVE.
-//   - createdAt <= lastSyncAt → existed at last pull, gone now → another
-//     device DELETED it → DROP locally too.
-// `lastSyncAt === 0` means we've never successfully pulled on this device,
-// so we fall back to merge-preserve-all (treat everything local as pending).
+// Merge cloud rows with local rows. Used by pullAll. Three things happen:
+//   1. Cloud rows whose IDs are in the local tombstone list are DROPPED
+//      from the cloud snapshot — we deleted them locally; cloud just hasn't
+//      caught up yet. (Without this, an offline-delete would be reverted by
+//      the next pull.)
+//   2. For local rows not in cloud:
+//      - createdAt > lastSyncAt → pending local addition, preserve.
+//      - createdAt <= lastSyncAt → existed last pull, gone now → cloud
+//        deleted it on another device → drop locally too.
+//   3. lastSyncAt === 0 (first-ever pull) → preserve all local-only rows.
 function mergePull<T extends { id: string; createdAt: number }>(
   cloud: T[],
   local: T[],
   lastSyncAt: number,
+  tombstones: string[],
 ): T[] {
-  if (cloud.length === 0 && lastSyncAt === 0) return local;
-  const cloudIds = new Set(cloud.map((x) => x.id));
+  const ts = new Set(tombstones);
+  const cloudFiltered = cloud.filter((x) => !ts.has(x.id));
+  if (cloudFiltered.length === 0 && lastSyncAt === 0) return local;
+  const cloudIds = new Set(cloudFiltered.map((x) => x.id));
   const localOnly = local.filter((x) => !cloudIds.has(x.id));
   const pendingPush = lastSyncAt === 0 ? localOnly : localOnly.filter((x) => x.createdAt > lastSyncAt);
-  return [...cloud, ...pendingPush];
+  return [...cloudFiltered, ...pendingPush];
 }
 
 function schedulePush() {
@@ -330,13 +343,14 @@ async function pullAll(uid: string): Promise<{ hasCloudData: boolean }> {
       // single-user use, revisit when multi-user lands.
       useStore.setState((s) => {
         const lastSync = s.lastSyncAt;
-        const mergedProjects = mergePull(projects, s.projects, lastSync);
+        const ts = s.tombstones;
+        const mergedProjects = mergePull(projects, s.projects, lastSync, ts.projects);
         const activeId = p?.active_project_id ?? mergedProjects[0]?.id ?? s.activeProjectId;
         return {
           projects: mergedProjects,
-          goals: mergePull(goals, s.goals, lastSync),
-          notes: mergePull(notes, s.notes, lastSync),
-          sets: mergePull(sets, s.sets, lastSync),
+          goals: mergePull(goals, s.goals, lastSync, ts.goals),
+          notes: mergePull(notes, s.notes, lastSync, ts.notes),
+          sets: mergePull(sets, s.sets, lastSync, ts.sets),
           activeProjectId: activeId,
           vision: mergedProjects.find((x) => x.id === activeId)?.vision ?? s.vision,
           profile: p
@@ -493,6 +507,19 @@ export function stopSync(): void {
   }
   useStore.getState().resetAll();
   setStatus('idle');
+}
+
+// Trigger a manual sync — push pending local changes, then pull cloud.
+// Wired to the "Sync now" button in Settings so the user can force-reconcile
+// after any weirdness (stale state, suspected missed realtime event, etc).
+export async function forceSync(): Promise<void> {
+  if (!currentUserId) return;
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  await pushAll();
+  await pullAll(currentUserId);
 }
 
 // Hook into Supabase auth state — kept idempotent so it's safe to call repeatedly.
