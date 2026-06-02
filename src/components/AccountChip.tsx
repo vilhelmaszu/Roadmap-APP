@@ -6,7 +6,7 @@ import { signInWithGoogle, signOut, useAuthUser } from '@/services/auth';
 import { supabaseConfigured } from '@/services/supabase';
 import { Radius, Space } from '@/theme/themes';
 import { useTheme } from '@/theme/ThemeProvider';
-import { AppText } from './ui';
+import { AppText, useWide } from './ui';
 
 // Persistent account chip in the top-right corner of every screen.
 //   - Hidden entirely when Supabase env isn't configured.
@@ -16,6 +16,7 @@ import { AppText } from './ui';
 export function AccountChip() {
   const { theme } = useTheme();
   const { user, loading } = useAuthUser();
+  const wide = useWide();
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,35 +59,42 @@ export function AccountChip() {
         <Pressable
           onPress={() => setMenuOpen(true)}
           disabled={busy}
+          accessibilityLabel={display ?? 'Account'}
           style={{
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
-            paddingHorizontal: Space.md,
-            paddingVertical: 6,
+            gap: wide ? 8 : 0,
+            paddingHorizontal: wide ? Space.md : 4,
+            paddingVertical: wide ? 6 : 4,
             borderRadius: Radius.pill,
             borderWidth: 1,
             borderColor: theme.colors.border,
             backgroundColor: theme.colors.surface,
             opacity: busy ? 0.6 : 1,
           }}>
+          {/* Avatar circle — first initial of name/email. On mobile this is
+              the entire chip; on wide screens the name + chevron sit next to it. */}
           <View
             style={{
-              width: 22,
-              height: 22,
-              borderRadius: 11,
+              width: wide ? 22 : 28,
+              height: wide ? 22 : 28,
+              borderRadius: wide ? 11 : 14,
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: theme.colors.primary,
             }}>
-            <AppText size={11} weight="800" color="primaryText">
+            <AppText size={wide ? 11 : 13} weight="800" color="primaryText">
               {(display ?? '?').slice(0, 1).toUpperCase()}
             </AppText>
           </View>
-          <AppText size={13} weight="700" numberOfLines={1} style={{ maxWidth: 180 }}>
-            {display}
-          </AppText>
-          <Ionicons name="chevron-down" size={14} color={theme.colors.textMuted} />
+          {wide ? (
+            <>
+              <AppText size={13} weight="700" numberOfLines={1} style={{ maxWidth: 180 }}>
+                {display}
+              </AppText>
+              <Ionicons name="chevron-down" size={14} color={theme.colors.textMuted} />
+            </>
+          ) : null}
         </Pressable>
       ) : (
         <Pressable

@@ -114,35 +114,91 @@ export function Sidebar() {
         })}
       </View>
 
-      {/* Footer: roadmap progress */}
+      {/* Footer: roadmap progress + restart shortcut */}
       {wide ? (
-        <View
-          style={{
-            backgroundColor: theme.colors.surfaceAlt,
-            borderRadius: Radius.md,
-            padding: Space.md,
-            gap: 6,
-          }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <AppText size={11} weight="800" color="textMuted">
-              ROADMAP
-            </AppText>
-            <AppText size={11} weight="800" color="primary">
-              {Math.round(progress * 100)}%
-            </AppText>
+        <View style={{ gap: Space.sm }}>
+          <View
+            style={{
+              backgroundColor: theme.colors.surfaceAlt,
+              borderRadius: Radius.md,
+              padding: Space.md,
+              gap: 6,
+            }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              <AppText size={11} weight="800" color="textMuted">
+                ROADMAP
+              </AppText>
+              <AppText size={11} weight="800" color="primary">
+                {Math.round(progress * 100)}%
+              </AppText>
+            </View>
+            <ProgressBar progress={progress} height={6} />
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginTop: 2,
+              }}>
+              <AppText size={11} weight="700" color="textFaint">
+                {yearsLeft == null ? 'Ongoing' : `${yearsLeft} years left`}
+              </AppText>
+              <RestartButton compact />
+            </View>
           </View>
-          <ProgressBar progress={progress} height={6} />
-          <AppText size={11} weight="700" color="textFaint">
-            {yearsLeft == null ? 'Ongoing' : `${yearsLeft} years left`}
-          </AppText>
         </View>
       ) : (
-        <View style={{ alignItems: 'center' }}>
+        <View style={{ alignItems: 'center', gap: Space.sm }}>
           <AppText size={11} weight="800" color="primary">
             {Math.round(progress * 100)}%
           </AppText>
+          <RestartButton compact />
         </View>
       )}
     </View>
+  );
+}
+
+// Reload-the-app shortcut. Lives in the sidebar footer so it's reachable from
+// every screen in the installed PWA. Does NOT delete anything — just a
+// `location.reload()` (with a service-worker update check first so a newer
+// deploy can install before we load into it).
+function RestartButton({ compact }: { compact?: boolean }) {
+  const { theme } = useTheme();
+  const onPress = () => {
+    if (typeof window === 'undefined') return;
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .getRegistration()
+        .then((reg) => reg?.update())
+        .catch(() => undefined)
+        .finally(() => window.location.reload());
+    } else {
+      window.location.reload();
+    }
+  };
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={8}
+      accessibilityLabel="Restart app"
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: compact ? 6 : Space.sm,
+        paddingVertical: 4,
+        borderRadius: Radius.pill,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface,
+      }}>
+      <Ionicons name="refresh" size={12} color={theme.colors.textMuted} />
+      {compact ? null : (
+        <AppText size={11} weight="800" color="textMuted">
+          Restart
+        </AppText>
+      )}
+    </Pressable>
   );
 }

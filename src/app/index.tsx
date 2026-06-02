@@ -41,13 +41,25 @@ function greeting() {
   return 'Good evening';
 }
 
-function Stat({ value, label, color = 'text' }: { value: string; label: string; color?: 'text' | 'primary' | 'warning' | 'success' }) {
+function Stat({
+  value,
+  label,
+  color = 'text',
+  wide,
+}: {
+  value: string;
+  label: string;
+  color?: 'text' | 'primary' | 'warning' | 'success';
+  wide: boolean;
+}) {
+  // On narrow phones each Stat takes ~half the row (2x2 grid) so labels and
+  // values don't squeeze into each other. On wide screens they sit inline.
   return (
-    <View>
-      <AppText size={20} weight="800" color={color}>
+    <View style={{ flexBasis: wide ? 'auto' : '46%', flexGrow: wide ? 0 : 1, minWidth: wide ? 80 : undefined }}>
+      <AppText size={20} weight="800" color={color} numberOfLines={1}>
         {value}
       </AppText>
-      <AppText size={11} weight="700" color="textMuted">
+      <AppText size={11} weight="700" color="textMuted" numberOfLines={2}>
         {label}
       </AppText>
     </View>
@@ -131,10 +143,10 @@ export default function Dashboard() {
               flexWrap: 'wrap',
               gap: Space.lg,
             }}>
-            <Stat value={`${Math.round(roadmap * 100)}%`} label="ROADMAP DONE" color="primary" />
-            <Stat value={`Lvl ${lvl.level}`} label={`${lvl.intoLevel}/${lvl.span} XP`} />
-            <Stat value={`${profile.xp}`} label="TOTAL XP" />
-            <Stat value={vision.indefinite ? '∞' : `${vision.targetYear}`} label="VISION YEAR" />
+            <Stat wide={wide} value={`${Math.round(roadmap * 100)}%`} label="ROADMAP DONE" color="primary" />
+            <Stat wide={wide} value={`Lvl ${lvl.level}`} label={`${lvl.intoLevel}/${lvl.span} XP`} />
+            <Stat wide={wide} value={`${profile.xp}`} label="TOTAL XP" />
+            <Stat wide={wide} value={vision.indefinite ? '∞' : `${vision.targetYear}`} label="VISION YEAR" />
           </View>
           <View style={{ marginTop: Space.md }}>
             <ProgressBar progress={lvl.progress} />

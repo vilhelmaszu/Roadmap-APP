@@ -48,7 +48,9 @@ export const TIMEFRAME_COLOR: Record<Timeframe, string> = {
   weekly: '#3B82F6',
   monthly: '#EF4444',
   yearly: '#FBBF24',
-  none: '#7C8598',
+  // 'none' = indefinite / ongoing — bright purple so it stands out instead
+  // of fading into the chrome.
+  none: '#A855F7',
 };
 export function timeframeColor(tf: Timeframe): string {
   return TIMEFRAME_COLOR[tf];

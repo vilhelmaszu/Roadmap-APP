@@ -152,6 +152,30 @@ export function NoteModal({ noteId, onClose }: { noteId: string | null; onClose:
             maxWidth: 900,
             alignSelf: 'center',
           }}>
+          {/* Always-visible close button — anchored to the corner so the
+              cramped header row on narrow phones can't push it off-screen. */}
+          {note ? (
+            <Pressable
+              onPress={onClose}
+              hitSlop={12}
+              accessibilityLabel="Close note"
+              style={{
+                position: 'absolute',
+                top: 10,
+                right: 10,
+                zIndex: 2,
+                width: 36,
+                height: 36,
+                borderRadius: 18,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: theme.colors.surfaceAlt,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+              }}>
+              <Ionicons name="close" size={22} color={theme.colors.text} />
+            </Pressable>
+          ) : null}
           {note ? (
             <ScrollView
               contentContainerStyle={{ padding: Space.xl, gap: Space.md }}
@@ -183,9 +207,10 @@ export function NoteModal({ noteId, onClose }: { noteId: string | null; onClose:
                 <Pressable onPress={() => setConfirmDelete(true)} hitSlop={10}>
                   <Ionicons name="trash-outline" size={20} color={theme.colors.danger} />
                 </Pressable>
-                <Pressable onPress={onClose} hitSlop={10}>
-                  <Ionicons name="close" size={24} color={theme.colors.textMuted} />
-                </Pressable>
+                {/* Spacer where the inline X used to sit — the anchored
+                    close button above replaces it, leaving room here so the
+                    title input can't slide under the corner button. */}
+                <View style={{ width: 36 }} />
               </View>
 
               {/* Scope toggle: keep with active project OR move to global library */}

@@ -91,7 +91,7 @@ export default function Insights() {
               }}>
               <Ionicons name="snow" size={24} color={theme.colors.accent} />
             </View>
-            <View>
+            <View style={{ flex: 1, flexShrink: 1 }}>
               <AppText size={26} weight="800">
                 {profile.freezeTokens}
               </AppText>
