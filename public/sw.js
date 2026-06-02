@@ -8,7 +8,10 @@
 //     API calls still hit the network.
 //   - Bumping CACHE_VERSION on each release invalidates old caches.
 
-const CACHE_VERSION = 'roadmap-v1';
+// Bump this on each release so old cached bundles get evicted and the new
+// build actually reaches users. (Forgetting to bump leaves users on a stale
+// bundle indefinitely because the fetch handler is cache-first.)
+const CACHE_VERSION = 'roadmap-v2';
 const APP_SHELL = ['/', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
