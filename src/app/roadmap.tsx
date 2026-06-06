@@ -852,6 +852,8 @@ function GoalDetailPopup({ goalId, onClose }: { goalId: string | null; onClose: 
   const toggleGoalDone = useStore((s) => s.toggleGoalDone);
   const deleteGoal = useStore((s) => s.deleteGoal);
 
+  const setArchived = useStore((s) => s.setArchived);
+
   const [notesDraft, setNotesDraft] = useState('');
   const [pointDraft, setPointDraft] = useState('');
   const [subDraft, setSubDraft] = useState('');
@@ -933,6 +935,17 @@ function GoalDetailPopup({ goalId, onClose }: { goalId: string | null; onClose: 
               </AppText>
             </View>
           </View>
+          {/* Archive: hide from active lists without losing history. */}
+          <Pressable
+            onPress={() => {
+              setArchived(goal.id, true);
+              onClose();
+            }}
+            hitSlop={10}
+            accessibilityLabel="Archive goal"
+            style={{ marginLeft: Space.md }}>
+            <Ionicons name="archive-outline" size={20} color={theme.colors.textMuted} />
+          </Pressable>
           <Pressable onPress={() => setConfirmDelete(true)} hitSlop={10} style={{ marginLeft: Space.md }}>
             <Ionicons name="trash-outline" size={20} color={theme.colors.danger} />
           </Pressable>
