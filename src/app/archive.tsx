@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { InlineProjectDropdown } from '@/components/InlineProjectDropdown';
 import { AppText, Card, IconButton, Screen } from '@/components/ui';
 import { goalComplete, timeframeColor, todayKey } from '@/domain/logic';
 import { Goal, Timeframe } from '@/domain/types';
@@ -39,6 +40,11 @@ export default function Archive() {
 
   return (
     <Screen title="Archive" subtitle="Completed and archived goals — your track record.">
+      {/* Project switcher — archive is scoped to the active project, so switching
+          here surfaces a different project's archived goals. Same dropdown used
+          on /roadmap and /goals; selecting flips the global activeProjectId. */}
+      <InlineProjectDropdown />
+
       {/* Header strip: total + per-timeframe counters + clear */}
       {archived.length > 0 ? (
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: Space.sm, alignItems: 'center' }}>
